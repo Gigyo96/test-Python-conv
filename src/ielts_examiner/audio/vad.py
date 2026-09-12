@@ -1,17 +1,17 @@
 """Voice activity detection.
 
-The detector owns *debouncing* as well as detection. That is a deliberate
-division of labour: raw frame-by-frame verdicts flicker, and if the flicker
-reached the turn detector every component downstream would have to defend
-against it. Absorbing it here keeps ``turntaking.detector`` to pure bookkeeping.
+Detectors own *debouncing* as well as detection: raw frame-by-frame verdicts
+flicker, and absorbing that here keeps ``turntaking.detector`` to pure
+bookkeeping. The shared state machine lives in :mod:`ielts_examiner.audio.hysteresis`.
 
-``EnergyVad`` is the development implementation. Silero arrives in M2 behind the
-same protocol; nothing above this module changes when it does.
+``EnergyVad`` is the development implementation; :class:`~ielts_examiner.audio.silero.SileroVad`
+is the production one. Nothing above this module changes between them.
 """
 
 from typing import Protocol
 
 from ielts_examiner.audio.frames import FRAME_MS, AudioFrame
+from ielts_examiner.audio.hysteresis import SpeechGate
 
 
 class VoiceActivityDetector(Protocol):
@@ -27,15 +27,15 @@ class VoiceActivityDetector(Protocol):
 
 
 class EnergyVad:
-    """Amplitude-threshold detector with asymmetric thresholds and a hangover.
+    """Amplitude-threshold detector.
 
-    Crude but predictable, which is what a development and replay implementation
+    Crude but predictable, which is what a development and replay detector
     should be: given the same audio it always produces the same verdicts, so a
     change in endpointing behaviour during replay can only come from the policy.
 
-    Two thresholds rather than one, because a single threshold makes speech
-    flicker on and off around its value. Speech must cross ``activation_rms`` to
-    start and stay below ``deactivation_rms`` for ``hangover_ms`` to stop.
+    It measures loudness, not voice. On synthetic noise it reports speech and a
+    neural detector correctly does not -- which is why replay fixtures built
+    from noise exercise this detector and never Silero.
     """
 
     def __init__(
@@ -45,25 +45,14 @@ class EnergyVad:
         deactivation_rms: float = 0.010,
         hangover_ms: int = 60,
     ) -> None:
-        self._activation_rms = activation_rms
-        self._deactivation_rms = deactivation_rms
-        self._hangover_ms = hangover_ms
-        self._active = False
-        self._quiet_ms = 0
+        self._gate = SpeechGate(
+            activation=activation_rms, deactivation=deactivation_rms, hangover_ms=hangover_ms
+        )
 
     def is_speech(self, frame: AudioFrame) -> bool:
         """Classify ``frame``, taking the preceding frames into account."""
-        rms = frame.rms
-        if self._active:
-            self._quiet_ms = 0 if rms >= self._deactivation_rms else self._quiet_ms + FRAME_MS
-            if self._quiet_ms >= self._hangover_ms:
-                self._active = False
-        elif rms >= self._activation_rms:
-            self._active = True
-            self._quiet_ms = 0
-        return self._active
+        return self._gate.update(frame.rms, elapsed_ms=FRAME_MS)
 
     def reset(self) -> None:
         """Forget the current speech run."""
-        self._active = False
-        self._quiet_ms = 0
+        self._gate.reset()

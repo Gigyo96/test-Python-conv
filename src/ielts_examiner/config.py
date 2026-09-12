@@ -11,9 +11,16 @@ the replay-driven calibration described in ``docs/ARCHITECTURE.md`` (section 4).
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from pathlib import Path
 from types import MappingProxyType
 
 from ielts_examiner.domain.phase import Phase
+
+SESSIONS_DIR = Path("sessions")
+"""Where session directories are created, relative to the working directory."""
+
+SILERO_MODEL_PATH = Path.home() / ".cache" / "ielts-examiner" / "silero_vad.onnx"
+"""Default location of the Silero model. See ``audio.silero.MODEL_URL``."""
 
 
 @dataclass(frozen=True, slots=True)

@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>IELTS Speaking — examination room</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <main>
+      <header>
+        <h1>IELTS Speaking</h1>
+        <p class="phase" id="phase">not started</p>
+      </header>
+
+      <p class="examiner" id="examiner">
+        Use speakers or headphones, whichever you prefer. Echo cancellation is handled for you.
+      </p>
+
+      <div class="meter"><div class="meter-level" id="meter-level"></div></div>
+
+      <footer>
+        <button id="start" type="button">Begin the examination</button>
+        <span class="status" id="status">idle</span>
+      </footer>
+    </main>
+    <script src="app.js"></script>
+  </body>
+</html>

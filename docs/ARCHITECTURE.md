@@ -397,8 +397,10 @@ Un LLM che assegna band IELTS ha un errore realistico di **±0.5–1.0 band** ri
 │   │   └── prompts/                # examiner.md, rater_*.md, band_descriptors.md
 │   ├── speech_cache.py             # pre-sintesi, cache su disco con chiave su (testo, voce)
 │   ├── recording/
-│   │   ├── events.py               # event log append-only
-│   │   └── recorder.py             # WAV + manifest
+│   │   ├── events.py               # event log append-only, flush per append
+│   │   ├── audio_writer.py         # WAV in streaming
+│   │   ├── recorder.py             # facciata: eventi + due tracce audio
+│   │   └── session.py              # layout della directory di sessione
 │   └── report/render.py
 ├── web/
 │   ├── index.html                  # sala d'esame, cue card, timer

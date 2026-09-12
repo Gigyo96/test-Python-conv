@@ -9,14 +9,15 @@ Il design completo, con le decisioni e il perché di ciascuna, è in
 
 ## Stato
 
-**Milestone M1 completata.** Il nucleo di turn-taking, i contratti dei servizi,
-il log di sessione e il replay esistono e sono testati. Non c'è ancora audio dal
-vivo né esame eseguibile: quelli arrivano in M2 e M4.
+**Milestone M2 completata.** Il loop audio gira end-to-end in un browser reale:
+cattura con echo cancellation, rilevamento di fine turno, voce dell'esaminatore,
+registrazione della sessione. Le domande sono ancora un segnaposto e la voce è
+muta: l'esame vero arriva con M3 e M4.
 
 | Milestone | | |
 |---|---|---|
 | M1 | ✅ | Nucleo turn-taking, protocolli, event log, replay |
-| M2 | ⬜ | Browser ↔ server, cattura con echo cancellation, VAD Silero |
+| M2 | ✅ | Browser ↔ server, cattura con echo cancellation, VAD Silero |
 | M3 | ⬜ | Servizi Google, cache TTS, pre-sintesi |
 | M4 | ⬜ | Grafo Director: fasi, timer, albero Part 3 |
 | M5 | ⬜ | Grafo Assessor e report |
@@ -28,8 +29,24 @@ Nessuna credenziale serve fino a M3: tutta la suite gira sui fake.
 
 ```bash
 python -m venv .venv && .venv/bin/pip install -e ".[dev]"
+curl -sSL --create-dirs -o ~/.cache/ielts-examiner/silero_vad.onnx \
+  https://raw.githubusercontent.com/snakers4/silero-vad/master/src/silero_vad/data/silero_vad.onnx
 .venv/bin/python -m pytest
 ```
+
+## Avvio
+
+```bash
+python -m ielts_examiner
+```
+
+Apre la sala d'esame nel browser. Usa pure gli altoparlanti: l'echo
+cancellation è gestita dalla pagina, non servono cuffie.
+
+Il browser non è un vezzo. Il suo cancellatore d'eco WebRTC è l'unico
+industriale accessibile gratuitamente e multipiattaforma, e senza di quello gli
+altoparlanti rimandano la voce dell'esaminatore nel microfono e il rilevatore di
+fine turno scatta sulle parole dell'esaminatore stesso. Vedi la decisione D1.
 
 ## Il replay
 
@@ -63,10 +80,12 @@ sarebbe un errore d'esame.
 src/ielts_examiner/
   domain/       tipi puri, nessun I/O
   turntaking/   policy (funzione pura) + detector (solo contabilità)
-  audio/        framing PCM16 e voice activity detection
+  audio/        framing PCM16, gate condiviso, EnergyVad e SileroVad
+  server/       protocollo WS, transport, driver, orchestratore di sessione
   services/     protocolli STT/TTS/LLM e fake per la CI
-  recording/    event log append-only e layout di sessione
+  recording/    event log append-only, tracce WAV, layout di sessione
   replay.py     motore di replay
+web/            pagina d'esame: HTML, CSS, un worklet. Nessun build step.
 tools/replay.py CLI
 ```
 
@@ -75,5 +94,16 @@ tools/replay.py CLI
 ```bash
 .venv/bin/ruff check . && .venv/bin/ruff format --check .
 .venv/bin/mypy src tools
-.venv/bin/python -m pytest
+.venv/bin/python -m pytest          # veloce, senza credenziali né browser
+.venv/bin/python -m pytest -m browser   # guida un Chromium reale
 ```
+
+I test browser sono esclusi per default. Se il tuo Chromium non corrisponde alla
+build attesa da Playwright, indicalo con `IELTS_CHROMIUM=/percorso/a/chrome`.
+
+**Quello che i test non provano.** L'echo cancellation non è verificabile in
+automatico: il dispositivo audio simulato di Chromium non ha percorso acustico,
+quindi niente rimanda l'altoparlante nel microfono. La decisione D1 resta da
+validare su hardware reale, ed è la prima cosa da controllare. Allo stesso modo
+Silero non è esercitato dalle fixture: il rumore sintetico non è parlato, e un
+rilevatore neurale giustamente si rifiuta di chiamarlo tale.
