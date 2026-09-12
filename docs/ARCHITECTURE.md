@@ -100,36 +100,61 @@ Sopra la soglia base, un ladder di aggiustamenti sul transcript parziale:
 
 | Segnale | Effetto |
 |---|---|
-| Ultimo token è filler o congiunzione (`um`, `uh`, `and`, `but`, `because`, `so`, `like`, `I mean`, `well`) | **+800 ms** |
-| Enunciato sintatticamente incompleto (termina con preposizione, articolo, ausiliare) | **+500 ms** |
+| Esitazione: filler vocale (`um`, `uh`, `erm`) o locuzione (`I mean`, `you know`, `sort of`) | **+800 ms** |
+| Enunciato incompleto: preposizione, congiunzione subordinante, articolo, possessivo | **+500 ms** |
 | Turno già oltre 25 s e ultimo token conclusivo | **−200 ms** |
-| Energia in calo monotono sugli ultimi 500 ms (proxy prosodico di conclusione) | **−150 ms** |
+| Energia in calo sugli ultimi 500 ms (proxy prosodico di conclusione) | **−150 ms** |
+
+**Le liste sono deliberatamente conservative.** L'inglese è pieno di token che
+sembrano incompleti ma chiudono normalmente una frase: *"Yes, I do"*, *"I think
+so"*, *"No, I have not"*. Ogni falso positivo aggiunge mezzo secondo di vuoto
+proprio agli scambi brevi di cui la Part 1 è fatta, quindi ausiliari e modali
+sono **esclusi** dalla lista dei token incompleti. I discourse marker ambigui
+(`well`, `so`, `like`, `right`) contano come esitazione solo finché il candidato
+non ha detto nient'altro che filler: così *"Well…"* estende la soglia e *"I think
+it went well"* no.
+
+Sul segnale prosodico: il VAD rilascia qualche frame dopo la fine reale del
+parlato, e quei frame quasi silenziosi falserebbero la pendenza a **ogni** fine
+turno. La finestra di energia ignora quindi i frame sotto il 10% del proprio
+picco — soglia relativa e non assoluta, così vale per chi parla piano come per
+chi parla forte.
 
 Deliberatamente euristico e a costo zero. Un modello di turn-detection sarebbe più preciso ma aggiungerebbe latenza sul percorso critico: valutabile in v2, misurando prima quanto sbaglia l'euristica sui dati di replay.
 
 ### 4.3 Forma del componente (D8)
 
 ```python
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class TurnSignals:
     silence_ms: int
-    speech_ms: int
+    speech_ms: int  # totale parlato nel turno
+    contiguous_speech_ms: int  # run corrente ininterrotta
     phase_elapsed_ms: int
     partial_transcript: str
     energy_slope: float
-    is_examiner_speaking: bool
+    examiner_speaking: bool
 
-class TurnDecision(Enum):
+
+class TurnDecision(StrEnum):
     KEEP_LISTENING
-    ENDPOINT          # il candidato ha finito
-    BARGE_IN          # il candidato sta parlando sopra l'esaminatore
-    FORCE_STOP        # timer scaduto, l'esaminatore interrompe
-    PROMPT_CONTINUE   # silenzio anomalo in Part 2, sollecito
+    ENDPOINT  # il candidato ha finito
+    BARGE_IN  # il candidato sta parlando sopra l'esaminatore
+    FORCE_STOP  # timer scaduto, l'esaminatore interrompe
+    PROMPT_CONTINUE  # silenzio anomalo in Part 2, sollecito
 
-def decide(signals: TurnSignals, phase: Phase, cfg: TurnConfig) -> TurnDecision: ...
+
+def decide(signals: TurnSignals, phase: Phase, config: TurnConfig) -> TurnDecision: ...
 ```
 
-Pura: nessun I/O, nessuno stato nascosto, nessun orologio interno. Test in §12.1.
+Due contatori di parlato invece di uno, perché rispondono a domande diverse: il
+guard anti-eco deve sapere se il candidato sta *sostenendo* la voce sopra
+l'esaminatore (l'eco residuo è breve e frammentato), mentre la regola del turno
+assestato guarda quanto è stato detto in totale.
+
+Pura: nessun I/O, nessuno stato nascosto, nessun orologio interno. Tutto lo stato
+mutabile vive in `TurnDetector`, che conta millisecondi e delega ogni giudizio.
+Test in §12.1.
 
 ### 4.4 Soppressione dell'eco residuo a livello di policy
 
@@ -204,13 +229,13 @@ class DirectorState(TypedDict):
     exam_clock_ms: int
     phase_deadline_ms: int | None
     part1_topics: list[Topic]
-    part1_cursor: tuple[int, int]        # (topic, domanda)
+    part1_cursor: tuple[int, int]  # (topic, domanda)
     cue_card: CueCard
-    part3_tree: Part3Tree                # pre-generato e pre-sintetizzato
+    part3_tree: Part3Tree  # pre-generato e pre-sintetizzato
     part3_path: list[str]
-    turns: Annotated[list[Turn], add]    # reducer append-only
+    turns: Annotated[list[Turn], add]  # reducer append-only
     candidate_name: str | None
-    flags: ExamFlags                     # repeat usati, probe usati, ...
+    flags: ExamFlags  # repeat usati, probe usati, ...
 ```
 
 ### 6.4 Conditional edges
@@ -336,16 +361,23 @@ Un LLM che assegna band IELTS ha un errore realistico di **±0.5–1.0 band** ri
 │   ├── ARCHITECTURE.md             # questo documento
 │   └── decisions/                  # ADR per le scelte che cambieranno
 ├── src/ielts_examiner/
-│   ├── __main__.py                 # avvia uvicorn, apre il browser
-│   ├── config.py                   # Settings (pydantic-settings), VoiceProfile, TurnConfig
-│   ├── server/
+│   ├── __main__.py                 # avvia uvicorn, apre il browser          [M2]
+│   ├── config.py                   # VoiceProfile, PhaseTuning, TurnConfig
+│   ├── replay.py                   # ★ motore di replay (§11.2)
+│   ├── domain/                     # tipi puri: nessun I/O, nessun framework
+│   │   ├── phase.py                # Phase
+│   │   └── turn.py                 # TurnSignals, TurnDecision
+│   ├── turntaking/
+│   │   ├── policy.py               # ★ decide() — funzione pura (§4.3)
+│   │   ├── lexicon.py              # classificazione della coda dell'enunciato
+│   │   └── detector.py             # shell stateful: solo contabilità
+│   ├── audio/
+│   │   ├── frames.py               # AudioFrame, framing PCM16
+│   │   └── vad.py                  # Protocol + EnergyVad (Silero in M2)
+│   ├── server/                                                            # [M2]
 │   │   ├── app.py                  # FastAPI, mount statici
 │   │   ├── protocol.py             # schema messaggi WS
 │   │   └── session_runner.py       # orchestratore asyncio della sessione
-│   ├── audio/
-│   │   ├── frames.py               # tipi PCM, ring buffer
-│   │   ├── vad.py                  # wrapper Silero ONNX
-│   │   └── turn_policy.py          # ★ decide() — funzione pura (§4.3)
 │   ├── services/
 │   │   ├── protocols.py            # SpeechToText / TextToSpeech / LanguageModel
 │   │   ├── google_stt.py
@@ -353,7 +385,7 @@ Un LLM che assegna band IELTS ha un errore realistico di **±0.5–1.0 band** ri
 │   │   ├── gemini.py
 │   │   ├── live_backend.py         # Gemini Live, sperimentale (D5)
 │   │   └── fakes.py                # implementazioni per test e CI senza credenziali
-│   ├── graphs/
+│   ├── graphs/                                                          # [M4/M5]
 │   │   ├── director.py
 │   │   ├── director_state.py
 │   │   ├── assessor.py
@@ -375,14 +407,21 @@ Un LLM che assegna band IELTS ha un errore realistico di **±0.5–1.0 band** ri
 │   └── style.css
 ├── tests/
 │   ├── test_turn_policy.py         # tabella di casi (§12.1)
-│   ├── test_director.py            # golden FSM (§12.2)
-│   ├── test_assessor.py
-│   └── fixtures/
+│   ├── test_lexicon.py
+│   ├── test_turn_detector.py
+│   ├── test_audio.py
+│   ├── test_events.py
+│   ├── test_fakes.py
+│   ├── test_replay.py
+│   ├── test_director.py            # golden FSM (§12.2)                    [M4]
+│   └── fixtures/synthetic_audio.py # audio con struttura nota
 ├── tools/
-│   ├── replay.py                   # ★ riesegue una sessione registrata (§11)
-│   └── presynth.py                 # pre-popola la cache TTS dalla bank
+│   ├── replay.py                   # CLI sottile sopra ielts_examiner.replay
+│   └── presynth.py                 # pre-popola la cache TTS dalla bank    [M3]
 └── sessions/                       # output runtime, gitignored
 ```
+
+Le voci marcate `[Mn]` non esistono ancora: arrivano nella milestone indicata.
 
 ---
 
@@ -399,7 +438,18 @@ Il browser è un terminale: non prende decisioni, rende lo stato che riceve.
 
 ### 11.2 Replay mode
 
-`tools/replay.py sessions/<id> --speed 8` rimanda `candidate.wav` attraverso VAD, TurnPolicy e Director con STT e TTS **fake**, e produce un event log nuovo da diffare con l'originale.
+`python tools/replay.py sessions/<id> --phase part2_long_turn` rimanda
+`candidate.wav` attraverso VAD, TurnDetector e policy, e stampa ogni decisione
+con il silenzio che l'ha giustificata.
+
+Il replay **non è in tempo reale**: gira alla velocità della CPU e ricava ogni
+timestamp dall'audio stesso, quindi è riproducibile e una differenza di
+comportamento può venire solo da una modifica della policy.
+
+Registra **transizioni, non livelli**. La policy è istantanea per costruzione,
+quindi `ENDPOINT` resta vero per ogni frame della pausa che l'ha prodotto: ciò
+che serve è l'istante in cui è *diventato* vero. La deduplicazione sta nel tool,
+non nella policy, perché è l'assenza di stato nella policy a renderla testabile.
 
 È il tool di sviluppo più importante del progetto: senza, tarare l'endpointing significa parlare al microfono cinquanta volte; con, è un test da due secondi. Va costruito nella prima milestone, non alla fine.
 
@@ -468,7 +518,7 @@ Nessun nome di modello è hardcoded nel codice: solo config.
 
 | # | Contenuto | Criterio di uscita |
 |---|---|---|
-| **M1** | Scheletro, `Protocol` + fakes, event log, **replay mode**, `turn_policy` con tabella di casi | `pytest` verde senza credenziali; replay di una sessione sintetica |
+| **M1** ✅ | Scheletro, `Protocol` + fakes, event log, **replay mode**, `turn_policy` con tabella di casi | `pytest` verde senza credenziali; replay di una sessione sintetica |
 | **M2** | Browser ↔ server: cattura AEC, WS, playback, VAD Silero | Loop eco-free end-to-end con TTS fake |
 | **M3** | Servizi Google reali + speech cache + pre-sintesi | Latenza turni scriptati misurata ≤ 900 ms |
 | **M4** | Director completo: tutte le fasi, timer, pruning, albero Part 3 | Esame completo 11–14 min, golden test verdi |
